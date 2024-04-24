@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math 
 
 # hyperparameters
 batch_size = 16 # how many independent sequences will we process in parallel?
@@ -18,7 +19,7 @@ dropout = 0.0
 
 torch.manual_seed(1337)
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+
 with open('ibong_adarna.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
@@ -64,45 +65,43 @@ def estimate_loss():
     model.train()
     return out
 
-class Head(nn.Module):
-    """ one head of self-attention """
-
-    def __init__(self, head_size):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        B,T,C = x.shape
-        k = self.key(x)   # (B,T,C)
-        q = self.query(x) # (B,T,C)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,C)
-        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
-        return out
-
 class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
-
-    def __init__(self, num_heads, head_size):
+    """ combined head and multihead attention classes as per EX1"""
+    def __init__(self):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        self.c_attn = nn.Linear(n_embd, 3*n_embd)
+        self.c_proj = nn.Linear(n_embd, n_embd)
+        #regularization
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.dropout= dropout
+
+        self.register_buffer('bias', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
-        return out
+        B, T, C= x.shape
+
+        q, k ,v = self.c_attn(x).split(self.n_embd, dim=2)
+
+        k=k.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
+        q=q.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
+        v=v.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
+
+        att= (q@k.transpose(-2,-1))*(1.0/math.sqrt(k.size(-1)))
+        att= att.masked_fill(self.bias[:,:,:T,:T]==0, float('-inf'))
+        att= F.softmax(att, dim=-1)
+        att= self.attn_dropout(att)
+        y= att@v
+
+        y= y.transpose(1,2).contiguous().view(B, T, C)
+
+        y=self.resid_dropout(self.c_proj(y))
+
+        return y 
+
+
 
 class FeedFoward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
@@ -126,7 +125,8 @@ class Block(nn.Module):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
+        # self.sa = MultiHeadAttention(n_head, head_size)
+        self.sa = MultiHeadAttention()
         self.ffwd = FeedFoward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -220,7 +220,9 @@ for iter in range(max_iters):
 
 # generate from the model
 # context = torch.zeros((1, 1), dtype=torch.long, device=device)
+
 # print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
 
 
 # TODO: - EX1: The n-dimensional tensor mastery challenge: Combine the `Head` and `MultiHeadAttention` into one class that processes all the heads in parallel, treating the heads as another batch dimension (answer is in nanoGPT).
+# TODO: Use tiktoken as a encoder and decoder
