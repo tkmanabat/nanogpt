@@ -1,11 +1,16 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import numpy as np
 import math 
+
+import tiktoken
 
 # hyperparameters
 batch_size = 16 # how many independent sequences will we process in parallel?
+# batch_size = 12 # how many independent sequences will we process in parallel?
 block_size = 32 # what is the maximum context length for predictions?
+# block_size = 8 # what is the maximum context length for predictions?
 max_iters = 5000 # number of iterations to follow
 eval_interval = 100
 learning_rate = 1e-3
@@ -19,37 +24,68 @@ dropout = 0.0
 
 torch.manual_seed(1337)
 
+enc = tiktoken.get_encoding("gpt2")
 
 with open('ibong_adarna.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
 # here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
+# chars = sorted(list(set(text)))
+# vocab_size = len(chars)
 
-# create a mapping from characters to integers
-#text to integer
-stoi = { ch:i for i,ch in enumerate(chars) }
-#integer to text
-itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+# print('Vocabulary size:', vocab_size)
+
+# # create a mapping from characters to integers
+# # text to integer
+# stoi = { ch:i for i,ch in enumerate(chars) }
+# #integer to text
+# itos = { i:ch for i,ch in enumerate(chars) }
+# encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
+# decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
+
+encode = lambda s: enc.encode_ordinary(s)
+decode = lambda l: enc.decode(l)
+
+
+vocab_size = 50304
+
+print('Vocabulary size:', vocab_size)
 
 # Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9*len(data)) # first 90% will be train, rest val
-train_data = data[:n]
-val_data = data[n:]
+# data = torch.tensor(encode(text), dtype=torch.long)
+# vocab_size=len(data.unique())
+# n = int(0.9*len(data)) # first 90% will be train, rest val
+# train_data = data[:n]
+# val_data = data[n:]
+
+
+
+n=len(text)
+train_data=text[:int(0.9*n)]
+val_data=text[int(0.9*n):]
+
+train_data=np.array(encode(train_data), dtype=np.uint64)
+val_data=np.array(encode(val_data), dtype=np.uint64)
+
 
 # data loading
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    x, y = x.to(device), y.to(device)
+    # x = torch.stack([data[i:i+block_size] for i in ix])
+    # y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    # x, y = x.to(device), y.to(device)
+
+    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+
+    x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+
+
     return x, y
+
+
 
 @torch.no_grad()
 def estimate_loss():
@@ -81,7 +117,7 @@ class MultiHeadAttention(nn.Module):
         self.register_buffer('bias', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
 
     def forward(self, x):
-        B, T, C= x.shape
+        B, T, C= x.size()
 
         q, k ,v = self.c_attn(x).split(self.n_embd, dim=2)
 
@@ -124,7 +160,7 @@ class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
-        head_size = n_embd // n_head
+        # head_size = n_embd // n_head
         # self.sa = MultiHeadAttention(n_head, head_size)
         self.sa = MultiHeadAttention()
         self.ffwd = FeedFoward(n_embd)
@@ -149,11 +185,17 @@ class BigramLanguageModel(nn.Module):
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
-        B, T = idx.shape
+        device=idx.device
+        B, T = idx.size()
 
+
+        # print(f"Max idx: {torch.max(idx)}, Min idx: {torch.min(idx)}")
+        # print(f"T: {T}")
+
+        # assert T <= block_size, f"Cannot forward sequence of length {T}, block size is only {block_size}"
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        pos_emb = self.position_embedding_table(torch.arange(0,T,dtype=torch.long, device=device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
@@ -188,7 +230,6 @@ class BigramLanguageModel(nn.Module):
 
 
 #running the model itself
-
 model = BigramLanguageModel()
 m = model.to(device)
 # print the number of parameters in the model
@@ -206,6 +247,7 @@ for iter in range(max_iters):
 
     # sample a batch of data
     xb, yb = get_batch('train')
+    
 
     # evaluate the loss
     logits, loss = model(xb, yb)
@@ -219,10 +261,8 @@ for iter in range(max_iters):
 #ibong adarna loss 5k iters  loss>=2.5
 
 # generate from the model
-# context = torch.zeros((1, 1), dtype=torch.long, device=device)
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print('Generated Text:')
+print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
 
-# print(decode(m.generate(context, max_new_tokens=2000)[0].tolist()))
 
-
-# TODO: - EX1: The n-dimensional tensor mastery challenge: Combine the `Head` and `MultiHeadAttention` into one class that processes all the heads in parallel, treating the heads as another batch dimension (answer is in nanoGPT).
-# TODO: Use tiktoken as a encoder and decoder
