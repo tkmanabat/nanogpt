@@ -5,7 +5,7 @@ Fork of [Karpathy's NanoGPT](https://github.com/karpathy/nanoGPT)
 ### Differences:
 - Combined the 'Head' and 'MultiHeadAttention' into one class to process all the heads in parallel. 
 - Trained on a custom dataset. It is an old Filipino Poem named 'Ibong Adarna'.
-- Used byte-pair encoding rather than the character-level encoding. 
+- Used byte-pair encoding from GPT4 (Tiktoken CL100k base) rather than the character-level encoding. 
 
 ### Sample Generation
 
